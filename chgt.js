@@ -17,12 +17,15 @@
   const APPLY_DELAY = 300;
   const GENERATING_DELAY = 800;
   const SCROLL_PAUSE = 350;
+  const EST_TURN_HEIGHT = "500px"; // rough average turn height for contain-intrinsic-size
 
   let timer;
   let scrollTimer;
   let scrolling = false;
   let applying = false;
   let lastUrl = location.href;
+  let observedRoot = null;
+  let observer = null;
 
   const root = () => document.querySelector("main") || document.body;
 
@@ -36,34 +39,41 @@
     const el = document.createElement("style");
     el.id = "cgc4-style";
     el.textContent = `
-      main article.cgc4-old {
+      /* Scoped to the class alone (not "main article.cgc4-old") so it still
+         matches when turns() falls back to non-<article> nodes, e.g.
+         section[data-turn="user"]. */
+      main .cgc4-old {
         content-visibility:auto!important;
         contain:layout style paint!important;
+        contain-intrinsic-size:auto ${EST_TURN_HEIGHT}!important;
       }
-      main article.cgc4-old pre {
+      main .cgc4-old pre {
         max-height:110px!important;
         overflow:auto!important;
         contain:layout paint!important;
       }
-      main article.cgc4-old table {
+      main .cgc4-old table {
         display:block!important;
         max-height:150px!important;
         overflow:auto!important;
         contain:layout paint!important;
       }
-      main article.cgc4-old img,
-      main article.cgc4-old video,
-      main article.cgc4-old canvas,
-      main article.cgc4-old iframe {
+      main .cgc4-old img,
+      main .cgc4-old video,
+      main .cgc4-old canvas,
+      main .cgc4-old iframe {
         max-height:180px!important;
         object-fit:contain!important;
         contain:layout paint!important;
       }
-      main article.cgc4-old *,
-      main article.cgc4-old *::before,
-      main article.cgc4-old *::after {
-        animation-duration:.001s!important;
-        animation-delay:0s!important;
+      /* Paused instead of speeding up to .001s: an !important animation-duration
+         override doesn't stop infinite-loop animations (typing indicators,
+         spinners), it just makes them iterate ~1000x/sec, which is worse than
+         doing nothing. animation-play-state:paused actually freezes them. */
+      main .cgc4-old *,
+      main .cgc4-old *::before,
+      main .cgc4-old *::after {
+        animation-play-state:paused!important;
         transition-duration:.001s!important;
         scroll-behavior:auto!important;
       }
@@ -93,17 +103,26 @@
     if (!list.length) list = [...r.querySelectorAll("article")];
 
     const seen = new Set();
+    const deduped = list.filter(el => {
+      if (!(el instanceof HTMLElement) || seen.has(el) || !el.textContent.trim()) return false;
+      seen.add(el);
+      return true;
+    });
 
-    return list
-      .filter(el => {
-        if (!(el instanceof HTMLElement) || seen.has(el) || !el.textContent.trim()) return false;
-        seen.add(el);
-        return true;
-      })
-      .sort((a, b) => {
-        if (a === b) return 0;
-        return a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
-      });
+    // querySelectorAll already returns document order, and the fixed-selector
+    // branches break after the first match (nothing to merge/reorder). Only
+    // the data-message-author-role fallback can produce out-of-order or
+    // duplicate nodes via closest("article"), so only sort in that case.
+    const needsSort = list.length && !list[0].matches?.(
+      'article[data-testid^="conversation-turn"],article[data-testid*="conversation-turn"],section[data-turn="user"],section[data-turn="assistant"],article'
+    );
+
+    if (!needsSort) return deduped;
+
+    return deduped.sort((a, b) => {
+      if (a === b) return 0;
+      return a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
+    });
   };
 
   const userTurn = el => {
@@ -128,6 +147,10 @@
 
     try {
       const list = turns();
+
+      // Root can change (SPA navigation swaps <main>) - keep the observer
+      // scoped to the live conversation container instead of document.body.
+      watchRoot();
 
       if (list.length <= KEEP_TURNS) {
         list.forEach(el => el.classList.remove("cgc4-old"));
@@ -172,14 +195,28 @@
     }, generating() ? GENERATING_DELAY : APPLY_DELAY);
   };
 
-  new MutationObserver(() => {
-    if (!applying) schedule();
-  }).observe(document.body, {
-    childList: true,
-    subtree: true,
-    attributes: true,
-    attributeFilter: ["data-testid", "data-message-author-role", "data-turn", "aria-busy"]
-  });
+  // Narrow the MutationObserver to the conversation root instead of
+  // document.body, so mutations in the sidebar/header/etc during streaming
+  // don't trigger irrelevant callback churn. Re-attaches if root() changes
+  // (e.g. after client-side navigation swaps out <main>).
+  const watchRoot = () => {
+    const r = root();
+    if (r === observedRoot) return;
+
+    observedRoot = r;
+    if (observer) observer.disconnect();
+
+    observer = new MutationObserver(() => {
+      if (!applying) schedule();
+    });
+
+    observer.observe(r, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["data-testid", "data-message-author-role", "data-turn", "aria-busy"]
+    });
+  };
 
   window.addEventListener("scroll", () => {
     scrolling = true;
@@ -197,5 +234,6 @@
   }, 1000);
 
   style();
+  watchRoot();
   setTimeout(schedule, 500);
 })();
