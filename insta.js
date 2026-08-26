@@ -139,6 +139,14 @@
         return location.pathname === '/' || location.pathname === '';
     }
 
+    // Returns true if a modal/overlay (share sheet, comments panel, etc.)
+    // is currently open on top of the feed. Used to bail out of the
+    // pause/play hit-testing so overlay taps (e.g. selecting a friend in
+    // the share sheet) don't get misread as a tap on the video underneath.
+    function isOverlayOpen() {
+        return !!document.querySelector('div[role="dialog"]');
+    }
+
     function findVideoAtPoint(x, y) {
         const element = document.elementFromPoint(x, y);
         if (!element) return null;
@@ -216,6 +224,7 @@
 
     document.addEventListener('pointerdown', event => {
         if (!isHomeFeed()) return;
+        if (isOverlayOpen()) return;
 
         if (
             event.pointerType === 'mouse' &&
@@ -263,6 +272,8 @@
 
         const state = pendingClick;
         pendingClick = null;
+
+        if (isOverlayOpen()) return;
 
         if (performance.now() - state.time > 800) {
             return;
